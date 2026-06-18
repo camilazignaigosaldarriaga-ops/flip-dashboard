@@ -1007,10 +1007,19 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(body)
             else:
-                body = b"<html><body><h2>Dashboard generandose, vuelve en 2 minutos...</h2></body></html>"
-                self.send_response(503)
+                body = b"""<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta http-equiv="refresh" content="15">
+<style>body{background:#0a0a0f;color:#e0e0e0;font-family:system-ui,sans-serif;
+display:flex;align-items:center;justify-content:center;height:100vh;margin:0;flex-direction:column;gap:16px}
+.spinner{width:40px;height:40px;border:3px solid #333;border-top-color:#3b82f6;border-radius:50%;animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+p{color:#888;font-size:.85rem}</style></head>
+<body><div class="spinner"></div>
+<h2 style="margin:0">Market Pulse</h2>
+<p>Generando dashboard con datos en vivo&hellip; recargando en 15s</p>
+</body></html>"""
+                self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Retry-After", "60")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)

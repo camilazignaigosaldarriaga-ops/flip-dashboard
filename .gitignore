@@ -2,4 +2,3 @@ venv/
 __pycache__/
 *.pyc
 .env
-market_pulse.html
