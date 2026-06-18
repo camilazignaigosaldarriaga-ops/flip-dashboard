@@ -1,0 +1,717 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Market Pulse</title>
+
+  <script>if (localStorage.getItem('mkt-theme') === 'light') document.documentElement.classList.add('light');</script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+
+  <style>
+    /* ── Theme tokens ─────────────────────────────────────────────── */
+    :root {
+      --bg-base:      #07090f;
+      --bg-panel:     #0c1018;
+      --bg-card:      #101620;
+      --bg-hover:     #141c28;
+      --border:       #192030;
+      --border-hi:    #243040;
+      --text:         #b8cce0;
+      --text-muted:   #506070;
+      --text-dim:     #28384a;
+      --green:        #00e676;
+      --red:          #f44336;
+      --accent:       #1a7acc;
+      --accent-glow:  rgba(26,122,204,0.15);
+      --mono:         'JetBrains Mono', monospace;
+    }
+    :root.light {
+      --bg-base:      #eef2f8;
+      --bg-panel:     #ffffff;
+      --bg-card:      #f6f9ff;
+      --bg-hover:     #edf1fb;
+      --border:       #d8e2f0;
+      --border-hi:    #b8c8e0;
+      --text:         #1a2840;
+      --text-muted:   #607090;
+      --text-dim:     #b0c0d8;
+      --green:        #00a846;
+      --red:          #d32f2f;
+      --accent:       #1255b0;
+      --accent-glow:  rgba(18,85,176,0.1);
+    }
+
+    /* ── Reset ────────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; overflow: hidden; }
+    body {
+      font-family: 'Inter', -apple-system, sans-serif;
+      background: var(--bg-base);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Top bar ──────────────────────────────────────────────────── */
+    .topbar {
+      height: 52px;
+      flex-shrink: 0;
+      display: flex;
+      align-items: stretch;
+      background: var(--bg-panel);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 0 20px;
+      border-right: 1px solid var(--border);
+      white-space: nowrap;
+      user-select: none;
+    }
+    .live-dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 6px var(--green);
+      animation: pulse 2.5s ease-in-out infinite;
+    }
+    .logo-text {
+      font-size: 0.78rem; font-weight: 700;
+      letter-spacing: 0.12em; text-transform: uppercase;
+      color: var(--text);
+    }
+
+    .tickers-bar {
+      display: flex;
+      align-items: center;
+      flex: 1;
+      gap: 2px;
+      padding: 0 8px;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+    .tickers-bar::-webkit-scrollbar { display: none; }
+
+    .tick {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      padding: 5px 10px;
+      border-radius: 5px;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: border-color 0.2s, background 0.2s;
+      min-width: 90px;
+    }
+    .tick:hover   { background: var(--bg-hover); border-color: var(--border-hi); }
+    .tick.active  { border-color: var(--accent); background: var(--accent-glow); }
+    .tick-name    { font-size: 0.6rem; font-weight: 700; letter-spacing: 0.07em;
+                    text-transform: uppercase; color: var(--text-muted); margin-bottom: 2px; }
+    .tick-price   { font-family: var(--mono); font-size: 0.82rem; font-weight: 600;
+                    color: var(--text); line-height: 1; }
+    .tick-pct     { font-family: var(--mono); font-size: 0.68rem; font-weight: 600; }
+    .up           { color: var(--green); }
+    .dn           { color: var(--red); }
+
+    .topbar-right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 16px;
+      border-left: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    #clock {
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
+    #conn-status {
+      font-size: 0.62rem; font-weight: 700;
+      letter-spacing: 0.08em; text-transform: uppercase;
+      padding: 3px 8px; border-radius: 3px;
+    }
+    .status-live        { background: rgba(0,230,118,0.12); color: var(--green); }
+    .status-connecting  { background: rgba(255,193,7,0.12);  color: #ffc107; }
+    .status-offline     { background: rgba(244,67,54,0.12);  color: var(--red); }
+
+    .theme-btn {
+      display: flex; align-items: center; gap: 5px;
+      padding: 5px 11px; border-radius: 14px;
+      background: transparent; border: 1px solid var(--border-hi);
+      color: var(--text-muted); font-family: 'Inter', sans-serif;
+      font-size: 0.72rem; font-weight: 500; cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    .theme-btn:hover { opacity: 0.7; }
+
+    /* ── Main split ───────────────────────────────────────────────── */
+    .main {
+      display: grid;
+      grid-template-columns: 1fr 380px;
+      flex: 1;
+      min-height: 0;
+    }
+
+    /* ── Chart panel ──────────────────────────────────────────────── */
+    .chart-panel {
+      display: flex;
+      flex-direction: column;
+      border-right: 1px solid var(--border);
+      min-height: 0;
+      background: var(--bg-base);
+    }
+
+    .chart-header {
+      padding: 14px 20px 12px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      flex-shrink: 0;
+    }
+    .chart-name  { font-size: 0.7rem; font-weight: 700; text-transform: uppercase;
+                   letter-spacing: 0.08em; color: var(--text-muted); margin-bottom: 4px; }
+    .chart-price { font-family: var(--mono); font-size: 1.8rem; font-weight: 700;
+                   color: var(--text); letter-spacing: -0.02em; line-height: 1; }
+    .chart-meta  { display: flex; align-items: center; gap: 10px; margin-top: 5px; }
+    .chart-chg   { font-family: var(--mono); font-size: 0.88rem; font-weight: 600; }
+    .chart-open  { font-family: var(--mono); font-size: 0.73rem; color: var(--text-muted); }
+    .chart-session { font-size: 0.68rem; font-weight: 600; color: var(--text-muted);
+                     padding: 3px 8px; border: 1px solid var(--border-hi);
+                     border-radius: 3px; letter-spacing: 0.05em; }
+
+    .chart-tabs {
+      display: flex; gap: 3px;
+      padding: 8px 16px;
+      border-bottom: 1px solid var(--border);
+      overflow-x: auto; flex-shrink: 0;
+      scrollbar-width: none;
+    }
+    .chart-tabs::-webkit-scrollbar { display: none; }
+    .tab {
+      padding: 4px 10px; border-radius: 4px; border: 1px solid transparent;
+      background: transparent; color: var(--text-muted);
+      font-family: var(--mono); font-size: 0.72rem; font-weight: 600;
+      cursor: pointer; white-space: nowrap;
+      transition: color 0.15s, border-color 0.15s, background 0.15s;
+    }
+    .tab:hover  { color: var(--text); border-color: var(--border-hi); }
+    .tab.active { color: var(--accent); border-color: var(--accent); background: var(--accent-glow); }
+
+    #chart-container { flex: 1; min-height: 0; }
+
+    .chart-loading {
+      flex: 1; display: flex; align-items: center; justify-content: center;
+      font-family: var(--mono); font-size: 0.78rem; color: var(--text-muted);
+    }
+
+    /* ── News panel ───────────────────────────────────────────────── */
+    .news-panel {
+      display: flex; flex-direction: column;
+      background: var(--bg-panel); min-height: 0;
+    }
+    .news-header {
+      padding: 12px 16px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+      flex-shrink: 0;
+    }
+    .news-header-label {
+      font-size: 0.68rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.1em; color: var(--text-muted);
+    }
+    .news-count {
+      font-family: var(--mono); font-size: 0.66rem; color: var(--text-dim);
+    }
+
+    .news-feed { overflow-y: auto; flex: 1; }
+    .news-item {
+      padding: 13px 16px;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+      transition: background 0.12s;
+    }
+    .news-item:hover { background: var(--bg-hover); }
+
+    .news-meta { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; }
+    .badge {
+      font-size: 0.58rem; font-weight: 700; letter-spacing: 0.07em;
+      padding: 2px 6px; border-radius: 3px; text-transform: uppercase;
+    }
+    .badge-yahoo { background: rgba(123,97,255,0.18); color: #a78bfa; }
+    .badge-cnbc  { background: rgba(30,144,255,0.18); color: #60a5fa; }
+    .news-time   { font-family: var(--mono); font-size: 0.66rem; color: var(--text-dim); }
+
+    .news-headline {
+      font-size: 0.83rem; font-weight: 600; color: var(--text);
+      line-height: 1.45; margin-bottom: 5px; letter-spacing: -0.01em;
+    }
+    .news-body {
+      font-size: 0.76rem; color: var(--text-muted);
+      line-height: 1.6;
+      display: -webkit-box; -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical; overflow: hidden;
+    }
+
+    /* ── Animations ───────────────────────────────────────────────── */
+    @keyframes pulse {
+      0%, 100% { opacity: 1; box-shadow: 0 0 6px var(--green); }
+      50%       { opacity: 0.35; box-shadow: none; }
+    }
+    @keyframes flash-up {
+      0%   { background: rgba(0,230,118,0.22); }
+      100% { background: transparent; }
+    }
+    @keyframes flash-dn {
+      0%   { background: rgba(244,67,54,0.22); }
+      100% { background: transparent; }
+    }
+    @keyframes slide-in {
+      from { opacity: 0; transform: translateY(-8px); }
+      to   { opacity: 1; transform: none; }
+    }
+    .flash-up  { animation: flash-up 0.9s ease-out; }
+    .flash-dn  { animation: flash-dn 0.9s ease-out; }
+    .slide-in  { animation: slide-in 0.3s ease-out; }
+
+    /* ── Scrollbar ────────────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 4px; height: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border-hi); border-radius: 2px; }
+
+    /* ── Skeleton loader ──────────────────────────────────────────── */
+    .skel {
+      background: linear-gradient(90deg, var(--bg-card) 25%, var(--bg-hover) 50%, var(--bg-card) 75%);
+      background-size: 200% 100%;
+      animation: shimmer 1.4s infinite;
+      border-radius: 4px;
+    }
+    @keyframes shimmer {
+      0%   { background-position: 200% 0; }
+      100% { background-position: -200% 0; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── TOP BAR ─────────────────────────────────────────────────────────────── -->
+<div class="topbar">
+  <div class="logo">
+    <div class="live-dot" id="live-dot"></div>
+    <span class="logo-text">Market Pulse</span>
+  </div>
+
+  <div class="tickers-bar" id="tickers-bar">
+    <!-- JS-rendered tickers -->
+    <div class="tick"><div class="tick-name skel" style="width:50px;height:8px;margin-bottom:4px"></div><div class="tick-price skel" style="width:70px;height:12px"></div></div>
+    <div class="tick"><div class="tick-name skel" style="width:50px;height:8px;margin-bottom:4px"></div><div class="tick-price skel" style="width:70px;height:12px"></div></div>
+    <div class="tick"><div class="tick-name skel" style="width:50px;height:8px;margin-bottom:4px"></div><div class="tick-price skel" style="width:70px;height:12px"></div></div>
+  </div>
+
+  <div class="topbar-right">
+    <span id="conn-status" class="status-connecting">Connecting</span>
+    <span id="clock">--:--:--</span>
+    <button class="theme-btn" onclick="toggleTheme()">
+      <span id="theme-icon">☀</span>
+      <span id="theme-label">Light</span>
+    </button>
+  </div>
+</div>
+
+<!-- ── MAIN ────────────────────────────────────────────────────────────────── -->
+<div class="main">
+
+  <!-- Chart panel -->
+  <div class="chart-panel">
+    <div class="chart-header">
+      <div>
+        <div class="chart-name" id="chart-name">S&amp;P 500</div>
+        <div class="chart-price" id="chart-price">—</div>
+        <div class="chart-meta">
+          <span class="chart-chg" id="chart-chg"></span>
+          <span class="chart-open" id="chart-open"></span>
+        </div>
+      </div>
+      <span class="chart-session" id="chart-session">TODAY</span>
+    </div>
+
+    <div class="chart-tabs" id="chart-tabs">
+      <!-- JS-rendered tabs -->
+    </div>
+
+    <div id="chart-container">
+      <div class="chart-loading" id="chart-loading">Loading chart…</div>
+    </div>
+  </div>
+
+  <!-- News panel -->
+  <div class="news-panel">
+    <div class="news-header">
+      <span class="news-header-label">Live Updates</span>
+      <span class="news-count" id="news-count">—</span>
+    </div>
+    <div class="news-feed" id="news-feed">
+      <!-- JS-rendered news -->
+      <div class="news-item"><div class="skel" style="height:12px;width:80%;margin-bottom:8px"></div><div class="skel" style="height:10px;width:95%;margin-bottom:5px"></div><div class="skel" style="height:10px;width:70%"></div></div>
+      <div class="news-item"><div class="skel" style="height:12px;width:80%;margin-bottom:8px"></div><div class="skel" style="height:10px;width:95%;margin-bottom:5px"></div><div class="skel" style="height:10px;width:70%"></div></div>
+      <div class="news-item"><div class="skel" style="height:12px;width:80%;margin-bottom:8px"></div><div class="skel" style="height:10px;width:95%;margin-bottom:5px"></div><div class="skel" style="height:10px;width:70%"></div></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+'use strict';
+
+// ── State ────────────────────────────────────────────────────────────────────
+let ws;
+let wsTimer;
+let chartRendered   = false;
+let currentSymbol   = '^GSPC';
+let currentName     = 'S&P 500';
+let prevPrices      = {};
+const seenNewsIds   = new Set();
+
+// Ticker order in top bar
+const TICKER_ORDER = ['^GSPC','^DJI','^IXIC','^RUT','^VIX','GC=F','CL=F','BTC-USD'];
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function fmtPrice(sym, price) {
+  if (sym === 'BTC-USD') return '$' + price.toLocaleString('en-US', {maximumFractionDigits: 0});
+  if (sym === 'GC=F' || sym === 'CL=F') return '$' + price.toFixed(2);
+  if (sym === '^VIX') return price.toFixed(2);
+  return price.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+}
+
+function signStr(val) { return val >= 0 ? '+' : ''; }
+function arrow(val)   { return val >= 0 ? '▲' : '▼'; }
+function cls(val)     { return val >= 0 ? 'up' : 'dn'; }
+
+function reflow(el) { void el.offsetWidth; }
+
+// ── Clock ────────────────────────────────────────────────────────────────────
+function tickClock() {
+  const now = new Date();
+  const hh  = String(now.getHours()).padStart(2,'0');
+  const mm  = String(now.getMinutes()).padStart(2,'0');
+  const ss  = String(now.getSeconds()).padStart(2,'0');
+  document.getElementById('clock').textContent = `${hh}:${mm}:${ss}  ET`;
+
+  // Market hours indicator (rough EST: 9:30–16:00 weekdays)
+  const day = now.getDay();
+  const h   = now.getHours() + now.getMinutes() / 60;
+  const open = day >= 1 && day <= 5 && h >= 9.5 && h < 16;
+  document.getElementById('chart-session').textContent = open ? '● OPEN' : '○ CLOSED';
+  document.getElementById('chart-session').style.color = open ? 'var(--green)' : 'var(--text-muted)';
+}
+setInterval(tickClock, 1000);
+tickClock();
+
+// ── Theme ────────────────────────────────────────────────────────────────────
+function applyChartTheme(isLight) {
+  const bg   = isLight ? '#f6f9ff' : '#07090f';
+  const grid = isLight ? '#d8e2f0' : '#192030';
+  const tick = isLight ? '#607090' : '#506070';
+  document.querySelectorAll('.js-plotly-plot').forEach(el => {
+    Plotly.relayout(el, {
+      paper_bgcolor: bg, plot_bgcolor: bg,
+      'xaxis.tickfont.color': tick,
+      'yaxis.gridcolor': grid,
+      'yaxis.tickfont.color': tick,
+    });
+  });
+}
+
+function setTheme(isLight) {
+  document.getElementById('theme-icon').textContent  = isLight ? '☽' : '☀';
+  document.getElementById('theme-label').textContent = isLight ? 'Dark' : 'Light';
+  isLight ? document.documentElement.classList.add('light')
+          : document.documentElement.classList.remove('light');
+  applyChartTheme(isLight);
+  localStorage.setItem('mkt-theme', isLight ? 'light' : 'dark');
+}
+
+function toggleTheme() {
+  setTheme(!document.documentElement.classList.contains('light'));
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+  setTheme(document.documentElement.classList.contains('light'));
+});
+
+// ── Connection status ─────────────────────────────────────────────────────────
+function setStatus(s) {
+  const el = document.getElementById('conn-status');
+  const dot = document.getElementById('live-dot');
+  el.className = '';
+  if (s === 'live') {
+    el.classList.add('status-live');
+    el.textContent = 'LIVE';
+    dot.style.animationPlayState = 'running';
+  } else if (s === 'connecting') {
+    el.classList.add('status-connecting');
+    el.textContent = 'Connecting…';
+    dot.style.animationPlayState = 'paused';
+    dot.style.opacity = '0.3';
+  } else {
+    el.classList.add('status-offline');
+    el.textContent = 'Offline';
+    dot.style.animationPlayState = 'paused';
+    dot.style.opacity = '0.15';
+  }
+}
+
+// ── Chart ─────────────────────────────────────────────────────────────────────
+function renderChart(data) {
+  const { symbol, timestamps, prices, open } = data;
+  const last = prices[prices.length - 1];
+  const pct  = (last - open) / open * 100;
+  const up   = pct >= 0;
+  const clr  = up ? getComputedStyle(document.documentElement).getPropertyValue('--green').trim()
+                  : getComputedStyle(document.documentElement).getPropertyValue('--red').trim();
+  const fill = up ? 'rgba(0,230,118,0.07)' : 'rgba(244,67,54,0.07)';
+  const isLight = document.documentElement.classList.contains('light');
+
+  // Update header
+  document.getElementById('chart-price').textContent = fmtPrice(symbol, last);
+  document.getElementById('chart-price').style.color = clr;
+  const chgEl = document.getElementById('chart-chg');
+  chgEl.textContent = `${arrow(pct)} ${signStr(pct)}${pct.toFixed(2)}%`;
+  chgEl.className   = 'chart-chg ' + cls(pct);
+  document.getElementById('chart-open').textContent = `Open ${fmtPrice(symbol, open)}`;
+
+  const bg   = isLight ? '#f6f9ff'  : '#07090f';
+  const grid = isLight ? '#d8e2f0'  : '#192030';
+  const tick = isLight ? '#607090'  : '#506070';
+
+  const trace = {
+    x: timestamps, y: prices, type: 'scatter', mode: 'lines',
+    line: { color: clr, width: 2 },
+    fill: 'tozeroy', fillcolor: fill,
+    hovertemplate: '%{y:,.2f}<extra></extra>',
+  };
+
+  const layout = {
+    margin: { l: 58, r: 10, t: 8, b: 32 },
+    paper_bgcolor: bg, plot_bgcolor: bg,
+    showlegend: false,
+    xaxis: {
+      showgrid: false, zeroline: false,
+      tickfont: { color: tick, size: 10, family: 'JetBrains Mono, monospace' },
+    },
+    yaxis: {
+      showgrid: true, gridcolor: grid, zeroline: false,
+      tickfont: { color: tick, size: 10, family: 'JetBrains Mono, monospace' },
+      tickformat: ',.2f',
+    },
+    hovermode: 'x unified',
+    hoverlabel: {
+      bgcolor: isLight ? '#edf1fb' : '#101620',
+      bordercolor: isLight ? '#b8c8e0' : '#243040',
+      font: { color: isLight ? '#1a2840' : '#b8cce0', size: 11,
+              family: 'JetBrains Mono, monospace' },
+    },
+  };
+
+  const container = document.getElementById('chart-container');
+  // Remove loading placeholder
+  const loadingEl = document.getElementById('chart-loading');
+  if (loadingEl) loadingEl.remove();
+
+  if (chartRendered) {
+    Plotly.react(container, [trace], layout, { displayModeBar: false, responsive: true });
+  } else {
+    Plotly.newPlot(container, [trace], layout, { displayModeBar: false, responsive: true });
+    chartRendered = true;
+  }
+}
+
+function requestChart(sym, name) {
+  currentSymbol = sym;
+  currentName   = name;
+  document.getElementById('chart-name').textContent = name;
+  document.getElementById('chart-price').textContent = '—';
+  document.getElementById('chart-price').style.color = '';
+  document.getElementById('chart-chg').textContent   = '';
+  document.getElementById('chart-open').textContent  = '';
+
+  // Highlight active tab
+  document.querySelectorAll('.tab').forEach(t => {
+    t.classList.toggle('active', t.dataset.symbol === sym);
+  });
+
+  // Highlight active ticker
+  document.querySelectorAll('.tick').forEach(t => {
+    t.classList.toggle('active', t.dataset.symbol === sym);
+  });
+
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'chart_request', symbol: sym }));
+  }
+}
+
+// ── Tickers ───────────────────────────────────────────────────────────────────
+function renderTickers(prices) {
+  const bar = document.getElementById('tickers-bar');
+  if (!bar._populated) {
+    bar.innerHTML = '';
+    bar._populated = true;
+  }
+
+  TICKER_ORDER.forEach(sym => {
+    const q = prices[sym];
+    if (!q) return;
+
+    const safeId = `tick-${sym.replace(/[\^=.]/g, '')}`;
+    let el = document.getElementById(safeId);
+    if (!el) {
+      el = document.createElement('div');
+      el.className   = 'tick';
+      el.id          = safeId;
+      el.dataset.symbol = sym;
+      el.onclick     = () => requestChart(sym, q.name);
+      bar.appendChild(el);
+    }
+
+    const pct = q.pct;
+    // Flash on price change
+    if (el.dataset.pct !== undefined && el.dataset.pct !== String(pct)) {
+      const wasUp = pct > parseFloat(el.dataset.pct);
+      el.classList.remove('flash-up', 'flash-dn');
+      reflow(el);
+      el.classList.add(wasUp ? 'flash-up' : 'flash-dn');
+    }
+    el.dataset.pct = pct;
+    el.classList.toggle('active', sym === currentSymbol);
+
+    el.innerHTML = `
+      <span class="tick-name">${q.name}</span>
+      <span class="tick-price">${fmtPrice(sym, q.price)}</span>
+      <span class="tick-pct ${cls(pct)}">${arrow(pct)} ${signStr(pct)}${Math.abs(pct).toFixed(2)}%</span>
+    `;
+  });
+}
+
+// ── Tabs ──────────────────────────────────────────────────────────────────────
+function renderTabs(tabs) {
+  const container = document.getElementById('chart-tabs');
+  container.innerHTML = '';
+  tabs.forEach(tab => {
+    const btn = document.createElement('button');
+    btn.className      = 'tab' + (tab.symbol === currentSymbol ? ' active' : '');
+    btn.textContent    = tab.label;
+    btn.dataset.symbol = tab.symbol;
+    btn.onclick        = () => requestChart(tab.symbol, tab.name);
+    container.appendChild(btn);
+  });
+}
+
+// ── News ──────────────────────────────────────────────────────────────────────
+function createNewsEl(item, isNew) {
+  const el = document.createElement('div');
+  el.className = 'news-item' + (isNew ? ' slide-in' : '');
+
+  const srcCls = item.source === 'Yahoo' ? 'badge-yahoo' : 'badge-cnbc';
+  const timeStr = item.time ? `<span class="news-time">${item.time}</span>` : '';
+  const bodyStr = item.body ? `<div class="news-body">${item.body}</div>` : '';
+
+  el.innerHTML = `
+    <div class="news-meta">
+      <span class="badge ${srcCls}">${item.source}</span>
+      ${timeStr}
+    </div>
+    <div class="news-headline">${item.title}</div>
+    ${bodyStr}
+  `;
+  return el;
+}
+
+function renderNews(items) {
+  const feed  = document.getElementById('news-feed');
+  const isInit = seenNewsIds.size === 0;
+
+  if (isInit) {
+    feed.innerHTML = '';
+    items.forEach(item => {
+      seenNewsIds.add(item.id);
+      feed.appendChild(createNewsEl(item, false));
+    });
+  } else {
+    // Prepend new items
+    const newItems = items.filter(item => !seenNewsIds.has(item.id));
+    newItems.forEach(item => seenNewsIds.add(item.id));
+    [...newItems].reverse().forEach(item => {
+      feed.insertBefore(createNewsEl(item, true), feed.firstChild);
+    });
+  }
+
+  document.getElementById('news-count').textContent = `${feed.children.length} updates`;
+}
+
+// ── WebSocket ─────────────────────────────────────────────────────────────────
+function handleMessage(msg) {
+  switch (msg.type) {
+    case 'init':
+      if (msg.tabs)   renderTabs(msg.tabs);
+      if (msg.prices && Object.keys(msg.prices).length) renderTickers(msg.prices);
+      if (msg.news    && msg.news.length)  renderNews(msg.news);
+      break;
+
+    case 'prices':
+      renderTickers(msg.data);
+      // Update chart header if current symbol is in the update
+      if (msg.data[currentSymbol]) {
+        const q = msg.data[currentSymbol];
+        // Only update header price — chart data is handled separately
+        if (!chartRendered) {
+          document.getElementById('chart-price').textContent = fmtPrice(currentSymbol, q.price);
+        }
+      }
+      break;
+
+    case 'news':
+      renderNews(msg.data);
+      break;
+
+    case 'chart':
+      renderChart(msg);
+      break;
+  }
+}
+
+function connectWS() {
+  setStatus('connecting');
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+
+  ws.onopen = () => {
+    clearTimeout(wsTimer);
+    setStatus('live');
+  };
+
+  ws.onmessage = e => {
+    try { handleMessage(JSON.parse(e.data)); }
+    catch (err) { console.error('WS parse error', err); }
+  };
+
+  ws.onclose = () => {
+    setStatus('offline');
+    wsTimer = setTimeout(connectWS, 4000);
+  };
+
+  ws.onerror = () => ws.close();
+}
+
+connectWS();
+</script>
+</body>
+</html>
