@@ -469,8 +469,9 @@ def _fetch_news_internal() -> list:
 
 def analyze_market_events(news_items: list, prices: dict) -> list:
     """
-    Fetches journalist-written articles via yfinance news API and extracts
-    market-moving events using Gemini. Ignores live blog posts.
+    Scrapes the 'Stock Market Today' article from CNBC and Yahoo Finance
+    using Playwright and extracts market-moving events with Gemini.
+    Only journalist-written content from these two specific articles.
     """
     api_key = os.getenv("GEMINI_API_KEY", "")
     if not api_key:
@@ -486,55 +487,59 @@ def analyze_market_events(news_items: list, prices: dict) -> list:
         return []
     try:
         from google import genai
-    except ImportError:
-        print("  [análisis] google-genai no instalado")
+        from liveblog_scraper import scrape_cnbc, scrape_yahoo
+    except ImportError as e:
+        print(f"  [análisis] dependencia faltante: {e}")
         return []
 
-    # ── Fetch journalist-written articles via yfinance news API ──────────────────
-    _TICKERS = ["^GSPC", "^DJI", "^IXIC", "SPY", "QQQ", "GC=F", "CL=F", "^VIX",
-                "^TNX", "AAPL", "MSFT", "NVDA", "TSLA"]
-
+    today_str = date.today().strftime("%A, %B %d %Y")
     blocks: list[str] = []
-    seen: set[str] = set()
 
-    for _sym in _TICKERS:
-        try:
-            _news = yf.Ticker(_sym).news or []
-            for _n in _news:
-                _c     = _n.get("content", {})
-                _title = _c.get("title", "").strip()
-                _ctype = _c.get("contentType", "")
-                if not _title or _title in seen or _ctype == "VIDEO":
-                    continue
-                seen.add(_title)
-                _desc = re.sub(r"<[^>]+>", "", _c.get("description", "")).strip()[:500]
-                _pub  = (_c.get("provider") or {}).get("displayName", "Yahoo Finance")
-                _line = f"• [{_pub}] {_title}"
-                if _desc:
-                    _line += f"\n  {_desc}"
-                blocks.append(_line)
-        except Exception as _e:
-            print(f"  [yf_news:{_sym}] {_e}")
+    # ── CNBC — Stock Market Today ──────────────────────────────────────────────
+    try:
+        print("  [análisis] scraping CNBC Stock Market Today…")
+        cnbc_posts = scrape_cnbc()
+        if cnbc_posts:
+            blocks.append(f"=== CNBC — Stock Market Today ({today_str}) ===\n")
+            for p in cnbc_posts:
+                ts   = f"[{p.timestamp_raw}] " if p.timestamp_raw else ""
+                if p.headline:
+                    blocks.append(f"{ts}{p.headline}")
+                if p.body:
+                    blocks.append(p.body.strip() + "\n")
+            print(f"  [análisis] CNBC: {len(cnbc_posts)} entradas")
+    except Exception as e:
+        print(f"  [análisis] CNBC error: {e}")
 
-    print(f"  [yahoo_news] {len(seen)} artículos de periodistas")
+    # ── Yahoo Finance — Stock Market Today ────────────────────────────────────
+    try:
+        print("  [análisis] scraping Yahoo Finance Stock Market Today…")
+        yahoo_posts = scrape_yahoo()
+        if yahoo_posts:
+            blocks.append(f"\n=== Yahoo Finance — Stock Market Today ({today_str}) ===\n")
+            for p in yahoo_posts:
+                ts   = f"[{p.timestamp_raw}] " if p.timestamp_raw else ""
+                if p.headline:
+                    blocks.append(f"{ts}{p.headline}")
+                if p.body:
+                    blocks.append(p.body.strip() + "\n")
+            print(f"  [análisis] Yahoo Finance: {len(yahoo_posts)} entradas")
+    except Exception as e:
+        print(f"  [análisis] Yahoo Finance error: {e}")
 
-    if len(seen) < 3:
-        print("  [análisis] insuficientes artículos — devolviendo lista vacía")
+    article_text = "\n".join(blocks)[:13000]
+    if not article_text.strip():
+        print("  [análisis] sin contenido de los artículos — devolviendo lista vacía")
         return []
-
-    article_text = (
-        f"=== Yahoo Finance Market News — {date.today().strftime('%A, %B %d %Y')} ===\n\n"
-        + "\n\n".join(blocks)
-    )[:13000]
 
     spx_pct = prices.get("^GSPC", {}).get("pct", "")
-    spx_ctx = f" S&P 500 acumulado del día: {spx_pct:+.2f}%." if isinstance(spx_pct, float) else ""
+    spx_ctx = f" S&P 500 del día: {spx_pct:+.2f}%." if isinstance(spx_pct, float) else ""
 
     prompt = f"""Eres un analista financiero senior. Responde ÚNICAMENTE con JSON válido, sin texto adicional.
 
-Hoy es {date.today().strftime('%A, %B %d %Y')}.{spx_ctx}
+Hoy es {today_str}.{spx_ctx}
 
-Analiza los siguientes artículos escritos por periodistas de Yahoo Finance sobre el mercado de hoy:
+El siguiente es el contenido del artículo "Stock Market Today" escrito por los periodistas de CNBC y Yahoo Finance:
 
 {article_text}
 
@@ -543,19 +548,19 @@ Analiza los siguientes artículos escritos por periodistas de Yahoo Finance sobr
 Extrae los 6-8 eventos que más han movido al S&P 500 u otros activos del mercado hoy.
 
 CATEGORÍAS DE ALTA PRIORIDAD — si aparecen en el texto, SIEMPRE inclúyelas primero:
-1. Resultados corporativos trimestrales: earnings, EPS, revenue, guidance de grandes empresas; beats o misses
-2. Publicaciones económicas: PIB, inflación/IPC/PCE, tasa de interés, empleo/nóminas no agrícolas
+1. Resultados corporativos trimestrales: earnings, EPS, revenue, guidance; beats o misses
+2. Publicaciones económicas: PIB, inflación/IPC/PCE, tasa de interés, empleo/nóminas
 3. Noticias sobre petróleo: precio crudo, decisiones OPEP+, inventarios, producción
 4. Reserva Federal (Fed): reuniones FOMC, decisiones de tasas, declaraciones de Powell
 5. IPOs importantes: valuación superior a 1 trillón USD
 
 Reglas:
 - El titular describe el HECHO concreto (ej: "Fed mantiene tasas", no "Mercado sube tras Fed")
-- Incluye solo eventos con impacto verificable en el texto
+- Extrae solo eventos con impacto verificable en el texto de los artículos
 - Ordena por impacto: categorías de alta prioridad primero
 
 Devuelve ÚNICAMENTE un array JSON sin markdown:
-[{{"headline":"max 80 chars","detail":"1-2 oraciones max 180 chars","spx_impact":"max 45 chars","direction":"up|down|neutral","time_et":"hora ET o vacío","source":"Yahoo Finance"}}]"""
+[{{"headline":"max 80 chars","detail":"1-2 oraciones max 180 chars","spx_impact":"max 45 chars","direction":"up|down|neutral","time_et":"hora ET o vacío","source":"CNBC|Yahoo Finance|Ambos"}}]"""
 
     try:
         client = genai.Client(api_key=api_key)
@@ -567,7 +572,7 @@ Devuelve ÚNICAMENTE un array JSON sin markdown:
                 raw = raw[4:]
         events = json.loads(raw)
         if isinstance(events, list):
-            print(f"  ✓ {len(events)} eventos extraídos de artículos Yahoo Finance (Gemini)")
+            print(f"  ✓ {len(events)} eventos extraídos de CNBC + Yahoo Finance (Gemini)")
             return events
     except Exception as e:
         print(f"  ✗ Error en análisis Gemini: {e}")

@@ -229,47 +229,63 @@ Responde SOLO con este JSON (sin markdown):
     return result
 
 
-def _fetch_yahoo_news_text_sync() -> str:
+def _fetch_liveblog_article_text_sync() -> str:
     """
-    Fetches journalist-written market articles via yfinance news API.
-    Uses articles from multiple market tickers — no live blog posts.
+    Scrapes the 'Stock Market Today' live article from CNBC and Yahoo Finance
+    using Playwright and returns all journalist-written content as a single text block.
     """
-    import yfinance as yf
-
-    TICKERS = ["^GSPC", "^DJI", "^IXIC", "SPY", "QQQ", "GC=F", "CL=F", "^VIX",
-               "^TNX", "AAPL", "MSFT", "NVDA", "TSLA"]
-
-    blocks: list[str] = []
-    seen: set[str] = set()
-
-    for sym in TICKERS:
-        try:
-            news = yf.Ticker(sym).news or []
-            for n in news:
-                c     = n.get("content", {})
-                title = c.get("title", "").strip()
-                ctype = c.get("contentType", "")
-                if not title or title in seen or ctype == "VIDEO":
-                    continue
-                seen.add(title)
-                desc = re.sub(r"<[^>]+>", "", c.get("description", "")).strip()[:500]
-                pub  = (c.get("provider") or {}).get("displayName", "Yahoo Finance")
-                line = f"• [{pub}] {title}"
-                if desc:
-                    line += f"\n  {desc}"
-                blocks.append(line)
-        except Exception as e:
-            print(f"  [yf_news:{sym}] {e}")
-
-    print(f"  [yahoo_news] {len(seen)} artículos de periodistas (yfinance)")
-    if len(seen) < 3:
+    try:
+        from liveblog_scraper import scrape_cnbc, scrape_yahoo
+    except ImportError:
+        print("  [liveblog] liveblog_scraper no disponible")
         return ""
 
-    header = (
-        f"=== Yahoo Finance Market News — "
-        f"{datetime.now(timezone.utc).strftime('%A, %B %d %Y')} ==="
-    )
-    return header + "\n\n" + "\n\n".join(blocks)
+    today = datetime.now(timezone.utc).strftime("%A, %B %d %Y")
+    blocks: list[str] = []
+
+    # ── CNBC ──────────────────────────────────────────────────────────────────
+    try:
+        print("  [liveblog] scraping CNBC Stock Market Today…")
+        cnbc_posts = scrape_cnbc()
+        if cnbc_posts:
+            blocks.append(f"=== CNBC — Stock Market Today ({today}) ===\n")
+            for p in cnbc_posts:
+                ts   = f"[{p.timestamp_raw}] " if p.timestamp_raw else ""
+                head = f"{ts}{p.headline}" if p.headline else ""
+                body = (p.body or "").strip()
+                if head:
+                    blocks.append(head)
+                if body:
+                    blocks.append(body + "\n")
+            print(f"  [liveblog] CNBC: {len(cnbc_posts)} entradas")
+        else:
+            print("  [liveblog] CNBC: sin contenido")
+    except Exception as e:
+        print(f"  [liveblog] CNBC error: {e}")
+
+    # ── Yahoo Finance ──────────────────────────────────────────────────────────
+    try:
+        print("  [liveblog] scraping Yahoo Finance Stock Market Today…")
+        yahoo_posts = scrape_yahoo()
+        if yahoo_posts:
+            blocks.append(f"\n=== Yahoo Finance — Stock Market Today ({today}) ===\n")
+            for p in yahoo_posts:
+                ts   = f"[{p.timestamp_raw}] " if p.timestamp_raw else ""
+                head = f"{ts}{p.headline}" if p.headline else ""
+                body = (p.body or "").strip()
+                if head:
+                    blocks.append(head)
+                if body:
+                    blocks.append(body + "\n")
+            print(f"  [liveblog] Yahoo: {len(yahoo_posts)} entradas")
+        else:
+            print("  [liveblog] Yahoo: sin contenido")
+    except Exception as e:
+        print(f"  [liveblog] Yahoo error: {e}")
+
+    article_text = "\n".join(blocks)
+    print(f"  [liveblog] artículo total: {len(article_text)} chars")
+    return article_text
 
 
 def _ai_events_from_article_sync(article_text: str) -> dict:
@@ -447,10 +463,10 @@ def _fetch_events_sync() -> dict:
     cached = _c_events.get()
     if cached is not None:
         return cached
-    # Obtener texto de artículos Yahoo Finance (no live blog)
+    # Scrape el artículo "Stock Market Today" de CNBC + Yahoo Finance
     article_text = _c_yahoo_text.get()
     if article_text is None:
-        article_text = _fetch_yahoo_news_text_sync()
+        article_text = _fetch_liveblog_article_text_sync()
         _c_yahoo_text.set(article_text or "")
     result = _ai_events_from_article_sync(article_text or "")
     _c_events.set(result)
