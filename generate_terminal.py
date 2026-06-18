@@ -1116,12 +1116,12 @@ def build_html(prices, all_charts, news, tabs, stock_prices, generated_at, event
 // ── API base: relative when served by proxy, localhost when opened as local file
 const API_BASE = window.location.protocol === 'file:' ? 'http://localhost:5678' : '';
 
-// ── Embedded data ─────────────────────────────────────────────────────────────
+// ── Embedded data (precios iniciales para primer paint; charts dinámicos via API) ──
 const ALL_PRICES   = {prices_json};
-const ALL_CHARTS   = {all_charts_json};
+let   ALL_CHARTS   = {{}};          // cargado on-demand desde /api/charts/SYM/PERIOD
 const INIT_NEWS    = {news_json};
 const INIT_EVENTS  = {events_json};
-const STOCK_PRICES  = {stock_prices_json};
+let   STOCK_PRICES  = {stock_prices_json};
 const KNOWN_TICKERS = {{
   'AAPL':'Apple','MSFT':'Microsoft','NVDA':'NVIDIA','TSLA':'Tesla',
   'GOOGL':'Alphabet','META':'Meta','AMZN':'Amazon','JPM':'JPMorgan',
@@ -1473,12 +1473,25 @@ function makeTickFormatter(pk) {{
 // ── Draw chart (public entry point) ───────────────────────────────────────────
 // Shows skeleton via setChartState, then renders on the next animation frame so
 // the browser paints the skeleton before JS blocks the thread.
-function drawChart(sym, periodKey) {{
-  const data = (ALL_CHARTS[sym] || {{}})[periodKey];
+async function drawChart(sym, periodKey) {{
+  let data = (ALL_CHARTS[sym] || {{}})[periodKey];
+  if (!data) {{
+    setChartState(CS.LOADING);
+    try {{
+      var enc = encodeURIComponent(sym);
+      var r   = await fetch(API_BASE + '/api/charts/' + enc + '/' + periodKey, {{cache:'no-store'}});
+      if (r.ok) {{
+        data = await r.json();
+        if (!ALL_CHARTS[sym]) ALL_CHARTS[sym] = {{}};
+        ALL_CHARTS[sym][periodKey] = data;
+      }}
+    }} catch(e) {{ console.warn('[chart] fetch:', e); }}
+  }}
   if (!data || !data.closes || data.closes.length === 0) {{
-    document.getElementById('chart-price').textContent = 'No data';
+    document.getElementById('chart-price').textContent = 'Sin datos';
     document.getElementById('chart-chg').textContent   = '';
     document.getElementById('chart-ref').textContent   = '';
+    setChartState(CS.READY);
     return;
   }}
   setChartState(CS.LOADING);
@@ -2251,7 +2264,25 @@ async function fetchLiveQuotes() {{
 // Refresh main index prices + update ticker bar + extend 1D chart with latest price.
 async function refreshLivePrices() {{
   try {{
-    var live = await fetchLiveQuotes();
+    // Intentar primero el backend propio (más confiable que el CORS proxy)
+    var live = null;
+    try {{
+      var apiResp = await fetch(API_BASE + '/api/prices', {{cache:'no-store'}});
+      if (apiResp.ok) {{
+        var apiData = await apiResp.json();
+        // El backend devuelve {{sym: {{name, price, pct, open}}}} — adaptar al formato interno
+        live = {{}};
+        Object.keys(apiData).forEach(function(sym) {{
+          var d = apiData[sym];
+          if (d && d.price != null) {{
+            live[sym] = {{symbol: sym, price: d.price, pct: d.pct, prevClose: d.open || 0}};
+          }}
+        }});
+        if (Object.keys(live).length < 3) live = null;  // fallback si muy pocos datos
+      }}
+    }} catch(_e) {{}}
+    // Fallback al CORS proxy de Yahoo si el backend no respondió
+    if (!live) live = await fetchLiveQuotes();
     if (!live) return;
     _liveQuotes = live;
 
@@ -2259,6 +2290,8 @@ async function refreshLivePrices() {{
     Object.keys(live).forEach(function(sym) {{
       if (prices[sym]) {{
         prices[sym] = Object.assign({{}}, prices[sym], {{price: live[sym].price, pct: live[sym].pct}});
+      }} else if (live[sym]) {{
+        prices[sym] = {{name: sym, symbol: sym, price: live[sym].price, pct: live[sym].pct, open: live[sym].prevClose}};
       }}
     }});
     renderTickers(prices);
@@ -2300,13 +2333,30 @@ async function refreshLivePrices() {{
 async function refreshStockPrices() {{
   var STOCK_SYMS = {stock_syms_json};
   try {{
-    var responses = await Promise.all(STOCK_SYMS.map(function(s) {{ return _fetchV8(s, false); }}));
-    responses.forEach(function(r) {{
-      if (r && STOCK_PRICES[r.symbol]) {{
-        STOCK_PRICES[r.symbol].price = r.price;
-        STOCK_PRICES[r.symbol].pct   = r.pct;
-      }}
-    }});
+    // Intentar primero el backend propio
+    var apiResp = await fetch(API_BASE + '/api/stocks', {{cache:'no-store'}});
+    if (apiResp.ok) {{
+      var apiData = await apiResp.json();
+      Object.keys(apiData).forEach(function(sym) {{
+        var d = apiData[sym];
+        if (!d) return;
+        if (STOCK_PRICES[sym]) {{
+          STOCK_PRICES[sym].price = d.price;
+          STOCK_PRICES[sym].pct   = d.pct;
+        }} else {{
+          STOCK_PRICES[sym] = {{price: d.price, pct: d.pct}};
+        }}
+      }});
+    }} else {{
+      // Fallback a Yahoo v8 directo
+      var responses = await Promise.all(STOCK_SYMS.map(function(s) {{ return _fetchV8(s, false); }}));
+      responses.forEach(function(r) {{
+        if (r && STOCK_PRICES[r.symbol]) {{
+          STOCK_PRICES[r.symbol].price = r.price;
+          STOCK_PRICES[r.symbol].pct   = r.pct;
+        }}
+      }});
+    }}
     renderHeatmap();
     renderMovers();
   }} catch(e) {{

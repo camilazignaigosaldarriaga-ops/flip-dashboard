@@ -23,4 +23,4 @@ COPY . .
 
 EXPOSE 8080
 
-CMD ["python", "news_proxy.py"]
+CMD ["uvicorn", "backend:app", "--host", "0.0.0.0", "--port", "8080"]
