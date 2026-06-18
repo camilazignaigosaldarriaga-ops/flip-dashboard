@@ -762,8 +762,8 @@ def _yahoo_resolve_url(page: Page) -> Optional[str]:
     """)
 
     if not links:
-        log.warning("[Yahoo] sin links de stock-market-today en el hub")
-        return None
+        log.warning("[Yahoo] sin links de stock-market-today en el hub — usando hub como artículo")
+        return _YAHOO_HUB
 
     log.info("[Yahoo] %d links encontrados en hub", len(links))
 
@@ -813,8 +813,8 @@ def scrape_yahoo(article_url: Optional[str] = None) -> list[LiveBlogPost]:
             if article_url is None:
                 url = _yahoo_resolve_url(page)
                 if not url:
-                    log.error("[Yahoo] no se pudo resolver la URL del artículo")
-                    return []
+                    log.warning("[Yahoo] no se encontró artículo específico — usando hub directamente: %s", _YAHOO_HUB)
+                    url = _YAHOO_HUB
             else:
                 url = article_url
 
