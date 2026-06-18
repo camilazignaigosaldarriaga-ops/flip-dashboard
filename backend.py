@@ -19,10 +19,11 @@ Arrancar:
   python backend.py
 """
 
-import os, json, time, re, hashlib, threading, asyncio, sys, ssl, urllib.request
+import os, json, time, re, hashlib, threading, asyncio, sys, ssl, urllib.request, urllib.parse
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Optional, AsyncGenerator
+from xml.etree import ElementTree as ET
 
 import uvicorn
 from fastapi import FastAPI, Query, Request
@@ -173,14 +174,15 @@ class _Cache:
         return time.time() - self._ts
 
 
-_c_prices   = _Cache(PRICE_TTL)
-_c_stocks   = _Cache(STOCK_TTL)
-_c_news     = _Cache(NEWS_TTL)
-_c_lb_cnbc  = _Cache(LB_TTL)
-_c_lb_yahoo = _Cache(LB_TTL)
-_c_events   = _Cache(EVENTS_TTL)
-_c_charts: dict[str, _Cache] = {}   # key = "sym|period"
-_c_summaries: dict[str, dict] = {}  # post_id → summary
+_c_prices      = _Cache(PRICE_TTL)
+_c_stocks      = _Cache(STOCK_TTL)
+_c_news        = _Cache(NEWS_TTL)
+_c_lb_cnbc     = _Cache(LB_TTL)
+_c_lb_yahoo    = _Cache(LB_TTL)
+_c_events      = _Cache(EVENTS_TTL)
+_c_yahoo_text  = _Cache(EVENTS_TTL)   # artículos Yahoo Finance como texto plano
+_c_charts: dict[str, _Cache] = {}     # key = "sym|period"
+_c_summaries: dict[str, dict] = {}    # post_id → summary
 
 # SSE
 _sse_queues: list[asyncio.Queue] = []
@@ -227,25 +229,52 @@ Responde SOLO con este JSON (sin markdown):
     return result
 
 
-def _ai_events_sync(cnbc_posts: list, yahoo_posts: list) -> dict:
-    blocks = []
-    if cnbc_posts:
-        blocks.append("=== CNBC ===")
-        for p in cnbc_posts[:15]:
-            ts = p.get("timestamp", 0)
-            t = datetime.utcfromtimestamp(ts).strftime("%H:%M UTC") if ts else ""
-            body = " ".join((p.get("paragraphs") or [])[:3])
-            blocks.append(f"\n[{t}] {p.get('headline','')}\n{body[:350]}")
-    if yahoo_posts:
-        blocks.append("\n=== Yahoo Finance ===")
-        for p in yahoo_posts[:15]:
-            ts = p.get("timestamp", 0)
-            t = datetime.utcfromtimestamp(ts).strftime("%H:%M UTC") if ts else ""
-            body = " ".join((p.get("paragraphs") or [])[:3])
-            blocks.append(f"\n[{t}] {p.get('headline','')}\n{body[:350]}")
+def _fetch_yahoo_news_text_sync() -> str:
+    """
+    Fetches journalist-written market articles via yfinance news API.
+    Uses articles from multiple market tickers — no live blog posts.
+    """
+    import yfinance as yf
 
-    blog_text = "\n".join(blocks)[:13000]
-    if not blog_text.strip():
+    TICKERS = ["^GSPC", "^DJI", "^IXIC", "SPY", "QQQ", "GC=F", "CL=F", "^VIX",
+               "^TNX", "AAPL", "MSFT", "NVDA", "TSLA"]
+
+    blocks: list[str] = []
+    seen: set[str] = set()
+
+    for sym in TICKERS:
+        try:
+            news = yf.Ticker(sym).news or []
+            for n in news:
+                c     = n.get("content", {})
+                title = c.get("title", "").strip()
+                ctype = c.get("contentType", "")
+                if not title or title in seen or ctype == "VIDEO":
+                    continue
+                seen.add(title)
+                desc = re.sub(r"<[^>]+>", "", c.get("description", "")).strip()[:500]
+                pub  = (c.get("provider") or {}).get("displayName", "Yahoo Finance")
+                line = f"• [{pub}] {title}"
+                if desc:
+                    line += f"\n  {desc}"
+                blocks.append(line)
+        except Exception as e:
+            print(f"  [yf_news:{sym}] {e}")
+
+    print(f"  [yahoo_news] {len(seen)} artículos de periodistas (yfinance)")
+    if len(seen) < 3:
+        return ""
+
+    header = (
+        f"=== Yahoo Finance Market News — "
+        f"{datetime.now(timezone.utc).strftime('%A, %B %d %Y')} ==="
+    )
+    return header + "\n\n" + "\n\n".join(blocks)
+
+
+def _ai_events_from_article_sync(article_text: str) -> dict:
+    """Extracts market-moving events from Yahoo Finance article text using Gemini."""
+    if not GEMINI_KEY or not article_text.strip():
         return {"events": [], "generated_at": "", "spx_day_chg": ""}
 
     # S&P 500 change
@@ -255,44 +284,54 @@ def _ai_events_sync(cnbc_posts: list, yahoo_posts: list) -> dict:
         df = yf.Ticker("^GSPC").history(period="2d", interval="1d")
         if len(df) >= 2:
             prev, cur = float(df["Close"].iloc[-2]), float(df["Close"].iloc[-1])
-            spx_chg = f"{'+' if cur >= prev else ''}{(cur-prev)/prev*100:.2f}%"
+            spx_chg = f"{'+' if cur >= prev else ''}{(cur - prev) / prev * 100:.2f}%"
     except Exception:
         pass
 
+    spx_ctx   = f" S&P 500: {spx_chg}." if spx_chg else ""
     today_str = datetime.now(timezone.utc).strftime("%A, %B %d %Y")
-    spx_ctx = f" S&P 500 acumulado del día: {spx_chg}." if spx_chg else ""
+
     prompt = f"""Hoy es {today_str}.{spx_ctx}
 
-Analiza el siguiente contenido editorial de los live blogs "Stock Market Today" de CNBC y Yahoo Finance.
+Analiza el siguiente contenido de artículos escritos por periodistas de Yahoo Finance sobre el mercado:
 
-{blog_text}
+{article_text[:14000]}
 
 ---
 
 Extrae los 6-8 eventos que más han movido al S&P 500 u otros activos hoy.
 
-CATEGORÍAS DE ALTA PRIORIDAD:
-1. Resultados corporativos trimestrales (earnings, EPS, revenue, guidance)
-2. Publicaciones económicas (PIB, inflación/IPC/PCE, tasa de interés, empleo)
-3. Noticias sobre petróleo (precio crudo, decisiones OPEP+, inventarios)
+CATEGORÍAS DE ALTA PRIORIDAD (incluir siempre si aparecen en el texto):
+1. Resultados corporativos trimestrales (earnings, EPS, revenue, guidance de grandes empresas)
+2. Publicaciones económicas (PIB, inflación/IPC/PCE, tasa de interés, empleo/nóminas)
+3. Noticias sobre petróleo (precio crudo, decisiones OPEP+, inventarios, producción)
 4. Reserva Federal: reuniones FOMC, decisiones de tasas, declaraciones de Powell
-5. IPOs importantes: valuación superior a 1 trillón USD
+5. IPOs importantes (valuación superior a 1 trillón USD)
 
-Devuelve ÚNICAMENTE un array JSON sin markdown:
-[{{"headline":"max 80 chars","detail":"1-2 oraciones max 180 chars","spx_impact":"max 45 chars","direction":"up|down|neutral","time_et":"hora ET o vacío","source":"CNBC|Yahoo Finance|Ambos"}}]"""
+Reglas:
+- El titular describe el HECHO concreto, no la reacción del mercado
+- Extrae solo eventos con impacto verificable mencionado en el texto
+- Ordena por impacto: primero las 5 categorías de alta prioridad, luego el resto
+- Si no hay suficiente información para un campo, usa cadena vacía
+
+Devuelve ÚNICAMENTE un array JSON válido, sin markdown ni texto extra:
+[{{"headline":"max 80 chars","detail":"1-2 oraciones max 180 chars","spx_impact":"max 45 chars","direction":"up|down|neutral","time_et":"hora ET o vacío","source":"Yahoo Finance"}}]"""
 
     try:
-        raw = _gemini_sync("Eres un analista financiero senior. Responde ÚNICAMENTE con JSON válido.\n\n" + prompt)
+        raw = _gemini_sync(
+            "Eres un analista financiero senior. Responde ÚNICAMENTE con JSON válido, sin markdown.\n\n" + prompt
+        )
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):
                 raw = raw[4:]
         events = json.loads(raw)
         if isinstance(events, list):
+            print(f"  [ai_events] ✓ {len(events)} eventos extraídos de artículos Yahoo Finance")
             return {
-                "events": events,
+                "events":       events,
                 "generated_at": datetime.now(timezone.utc).strftime("%H:%M UTC"),
-                "spx_day_chg": spx_chg,
+                "spx_day_chg":  spx_chg,
             }
     except Exception as e:
         print(f"  [ai_events] {e}")
@@ -408,11 +447,12 @@ def _fetch_events_sync() -> dict:
     cached = _c_events.get()
     if cached is not None:
         return cached
-    cnbc  = _c_lb_cnbc.get() or []
-    yahoo = _c_lb_yahoo.get() or []
-    if not cnbc and not yahoo:
-        return {"events": [], "generated_at": "", "spx_day_chg": ""}
-    result = _ai_events_sync(cnbc, yahoo)
+    # Obtener texto de artículos Yahoo Finance (no live blog)
+    article_text = _c_yahoo_text.get()
+    if article_text is None:
+        article_text = _fetch_yahoo_news_text_sync()
+        _c_yahoo_text.set(article_text or "")
+    result = _ai_events_from_article_sync(article_text or "")
     _c_events.set(result)
     return result
 
@@ -456,9 +496,10 @@ def _bg_loop():
                     print(f"[bg] {label}: {e}")
             _c_news.set(None)  # invalida cache de noticias
             last_lb = time.time()
-        # Eventos IA cada 15 min
+        # Artículos Yahoo Finance + eventos IA cada 15 min
         if time.time() - last_events >= EVENTS_TTL:
             try:
+                _c_yahoo_text.set(None)  # forzar re-fetch de artículos
                 _c_events.set(None)
                 _fetch_events_sync()
                 _sse_broadcast("events_updated", {})
